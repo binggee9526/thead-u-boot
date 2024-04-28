@@ -1,0 +1,11 @@
+. ${ROOT_DIR}/thead-u-boot/build.config.common
+
+ARCH=riscv
+CLANG_TRIPLE=riscv64-linux-gnu-
+CROSS_COMPILE=llvm-
+LD=ld.lld
+
+FILES="u-boot
+u-boot.bin
+System.map
+"

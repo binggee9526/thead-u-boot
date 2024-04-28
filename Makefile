@@ -18,7 +18,7 @@ NAME =
 MAKEFLAGS += -rR --include-dir=$(CURDIR)
 
 # Determine host architecture
-include include/host_arch.h
+include Makefile.host_arch
 MK_ARCH="${shell uname -m}"
 unexport HOST_ARCH
 ifeq ("x86_64", $(MK_ARCH))
@@ -437,6 +437,29 @@ KBUILD_CFLAGS   := -Wall -Wstrict-prototypes \
 		   $(LYB_CFLAGS)
 KBUILD_CFLAGS	+= -fshort-wchar -fno-strict-aliasing
 KBUILD_AFLAGS   := -D__ASSEMBLY__
+KBUILD_LDFLAGS  :=
+
+ifeq ($(cc-name),clang)
+ifneq ($(CROSS_COMPILE),)
+CLANG_TRIPLE	?= $(CROSS_COMPILE)
+CLANG_TARGET	:= --target=$(notdir $(CLANG_TRIPLE:%-=%))
+ifeq ($(shell $(srctree)/scripts/clang-android.sh $(CC) $(CLANG_TARGET)), y)
+$(error "Clang with Android --target detected. Did you specify CLANG_TRIPLE?")
+endif
+LDPPFLAGS	+= $(CLANG_TARGET)
+GCC_TOOLCHAIN_DIR := $(dir $(shell which $(CROSS_COMPILE)elfedit))
+CLANG_PREFIX	:= --prefix=$(GCC_TOOLCHAIN_DIR)$(notdir $(CROSS_COMPILE))
+GCC_TOOLCHAIN	:= $(realpath $(GCC_TOOLCHAIN_DIR)/..)
+endif
+ifneq ($(GCC_TOOLCHAIN),)
+CLANG_GCC_TC	:= --gcc-toolchain=$(GCC_TOOLCHAIN)
+endif
+CPP += $(CLANG_TARGET)
+KBUILD_CFLAGS += $(CLANG_TARGET) $(CLANG_GCC_TC) $(CLANG_PREFIX)
+KBUILD_AFLAGS += $(CLANG_TARGET) $(CLANG_GCC_TC) $(CLANG_PREFIX)
+KBUILD_CFLAGS += $(call cc-option, -no-integrated-as) -gdwarf-4
+KBUILD_AFLAGS += $(call cc-option, -no-integrated-as) -gdwarf-4
+endif
 
 # Don't generate position independent code
 KBUILD_CFLAGS	+= $(call cc-option,-fno-PIE)
@@ -627,6 +650,13 @@ export CFLAGS_EFI	# Compiler flags to add when building EFI app
 export CFLAGS_NON_EFI	# Compiler flags to remove when building EFI app
 export EFI_TARGET	# binutils target if EFI is natively supported
 
+export LTO_ENABLE
+
+# This is y if LTO is enabled for this build. See NO_LTO=1 to disable LTO
+ifeq ($(NO_LTO),)
+LTO_ENABLE=$(if $(CONFIG_LTO),y)
+endif
+
 # If board code explicitly specified LDSCRIPT or CONFIG_SYS_LDSCRIPT, use
 # that (or fail if absent).  Otherwise, search for a linker script in a
 # standard location.
@@ -657,6 +687,15 @@ else
 include/config/auto.conf: ;
 endif # $(dot-config)
 
+ifdef CONFIG_CC_OPTIMIZE_FOR_DEBUG
+KBUILD_HOSTCFLAGS   := -Wall -Wstrict-prototypes -Og -g -fomit-frame-pointer \
+		$(HOST_LFS_CFLAGS) $(HOSTCFLAGS)
+# Avoid false positives -Wmaybe-uninitialized
+# https://gcc.gnu.org/bugzilla/show_bug.cgi?id=78394
+KBUILD_HOSTCFLAGS   += -Wno-maybe-uninitialized
+KBUILD_HOSTCXXFLAGS := -Og -g $(HOST_LFS_CFLAGS) $(HOSTCXXFLAGS)
+endif
+
 #
 # Xtensa linker script cannot be preprocessed with -ansi because of
 # preprocessor operations on strings that don't make C identifiers.
@@ -671,8 +710,51 @@ else
 KBUILD_CFLAGS	+= -O2
 endif
 
+LTO_CFLAGS :=
+LTO_FINAL_LDFLAGS :=
+export LTO_CFLAGS LTO_FINAL_LDFLAGS
+ifeq ($(LTO_ENABLE),y)
+	ifeq ($(cc-name),clang)
+		LTO_CFLAGS		+= -DLTO_ENABLE -flto
+		LTO_FINAL_LDFLAGS	+= -flto
+
+		AR			= $(shell $(CC) -print-prog-name=llvm-ar)
+		NM			= $(shell $(CC) -print-prog-name=llvm-nm)
+	else
+		NPROC			:= $(shell nproc 2>/dev/null || echo 1)
+		LTO_CFLAGS		+= -DLTO_ENABLE -flto=$(NPROC)
+		LTO_FINAL_LDFLAGS	+= -fuse-linker-plugin -flto=$(NPROC)
+
+		# use plugin aware tools
+		AR			= $(CROSS_COMPILE)gcc-ar
+		NM			= $(CROSS_COMPILE)gcc-nm
+	endif
+
+	CFLAGS_NON_EFI			+= $(LTO_CFLAGS)
+
+	KBUILD_CFLAGS			+= $(LTO_CFLAGS)
+endif
+
+ifeq ($(CONFIG_STACKPROTECTOR),y)
+KBUILD_CFLAGS += $(call cc-option,-fstack-protector-strong)
+CFLAGS_EFI += $(call cc-option,-fno-stack-protector)
+else
 KBUILD_CFLAGS += $(call cc-option,-fno-stack-protector)
+endif
 KBUILD_CFLAGS += $(call cc-option,-fno-delete-null-pointer-checks)
+
+# disable pointer signed / unsigned warnings in gcc 4.0
+KBUILD_CFLAGS += -Wno-pointer-sign
+
+# disable stringop warnings in gcc 8+
+KBUILD_CFLAGS += $(call cc-disable-warning, stringop-truncation)
+
+KBUILD_CFLAGS += $(call cc-disable-warning, zero-length-bounds)
+KBUILD_CFLAGS += $(call cc-disable-warning, array-bounds)
+KBUILD_CFLAGS += $(call cc-disable-warning, stringop-overflow)
+
+# Enabled with W=2, disabled by default as noisy
+KBUILD_CFLAGS += $(call cc-disable-warning, maybe-uninitialized)
 
 # change __FILE__ to the relative path from the srctree
 KBUILD_CFLAGS	+= $(call cc-option,-fmacro-prefix-map=$(srctree)/=)
@@ -692,20 +774,26 @@ endif
 endif
 
 KBUILD_CFLAGS += $(call cc-option,-Wno-format-nonliteral)
-ifeq ($(cc-name),clang)
+KBUILD_CFLAGS += $(call cc-disable-warning, address-of-packed-member)
+
+ifdef CONFIG_CC_IS_CLANG
 KBUILD_CPPFLAGS += $(call cc-option,-Qunused-arguments,)
 KBUILD_CFLAGS += $(call cc-disable-warning, format-invalid-specifier)
 KBUILD_CFLAGS += $(call cc-disable-warning, gnu)
 KBUILD_CFLAGS += $(call cc-disable-warning, address-of-packed-member)
+# Quiet clang warning: comparison of unsigned expression < 0 is always false
+KBUILD_CFLAGS += $(call cc-disable-warning, tautological-compare)
+# CLANG uses a _MergedGlobals as optimization, but this breaks modpost, as the
+# source of a reference will be _MergedGlobals and not on of the whitelisted names.
+# See modpost pattern 2
+KBUILD_CFLAGS += $(call cc-option, -mno-global-merge,)
 KBUILD_CFLAGS += $(call cc-option, -fcatch-undefined-behavior)
+KBUILD_CFLAGS += $(call cc-disable-warning, deprecated-non-prototype)
 endif
 
-# turn jbsr into jsr for m68k
-ifeq ($(ARCH),m68k)
-ifeq ($(findstring 3.4,$(shell $(CC) --version)),3.4)
-KBUILD_AFLAGS += -Wa,-gstabs,-S
-endif
-endif
+# These warnings generated too much noise in a regular build.
+# Use make W=1 to enable them (see scripts/Makefile.extrawarn)
+KBUILD_CFLAGS += $(call cc-disable-warning, unused-but-set-variable)
 
 # Prohibit date/time macros, which would make the build non-deterministic
 KBUILD_CFLAGS   += $(call cc-option,-Werror=date-time)
@@ -808,7 +896,9 @@ u-boot-main := $(libs-y)
 ifeq ($(CONFIG_USE_PRIVATE_LIBGCC),y)
 PLATFORM_LIBGCC = arch/$(ARCH)/lib/lib.a
 else
+ifneq ($(cc-name),clang)
 PLATFORM_LIBGCC := -L $(shell dirname `$(CC) $(c_flags) -print-libgcc-file-name`) -lgcc
+endif
 endif
 PLATFORM_LIBS += $(PLATFORM_LIBGCC)
 ifeq ($(CONFIG_TARGET_LIGHT_C910),y)
@@ -868,7 +958,11 @@ DO_STATIC_RELA =
 endif
 
 # Always append ALL so that arch config.mk's can add custom ones
-ALL-y += u-boot.srec u-boot.bin u-boot.sym System.map binary_size_check dtbs
+ALL-y += u-boot.bin u-boot.sym System.map binary_size_check dtbs
+# llvm-objcopy doesn't support srec as an output format
+# ifeq ($(findstring llvm-,$(OBJCOPY)),)
+# INPUTS-y += u-boot.srec
+# endif
 
 ALL-$(CONFIG_ONENAND_U_BOOT) += u-boot-onenand.bin
 ifeq ($(CONFIG_SPL_FSL_PBL),y)
@@ -949,7 +1043,8 @@ endif
 
 # Normally we fill empty space with 0xff
 quiet_cmd_objcopy = OBJCOPY $@
-cmd_objcopy = $(OBJCOPY) --gap-fill=0xff $(OBJCOPYFLAGS) \
+cmd_objcopy = $(OBJCOPY) $(OBJCOPYFLAGS) \
+	$(if $(findstring llvm-,$(OBJCOPY)),,--gap-fill=0xff) \
 	$(OBJCOPYFLAGS_$(@F)) $< $@
 
 # Provide a version which does not do this, for use by EFI
@@ -1483,10 +1578,6 @@ MKIMAGEFLAGS_u-boot-spl.img = -A $(ARCH) -T firmware -C none \
 spl/u-boot-spl.img: spl/u-boot-spl.bin FORCE
 	$(call if_changed,mkimage)
 
-OBJCOPYFLAGS_u-boot.spr = -I binary -O binary --pad-to=$(CONFIG_SPL_PAD_TO) \
-			  --gap-fill=0xff
-u-boot.spr: spl/u-boot-spl.img u-boot.img FORCE
-	$(call if_changed,pad_cat)
 
 ifneq ($(CONFIG_ARCH_SOCFPGA),)
 quiet_cmd_socboot = SOCBOOT $@

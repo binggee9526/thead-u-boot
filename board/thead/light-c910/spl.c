@@ -412,7 +412,10 @@ static uint32_t get_custom_boot_seq(void)
 	/* TODO: user can decide the boot media according their own configuration */
 	return BOOT_DEVICE_MMC1;
 }
-
+u32 spl_boot_device(void)
+{
+	return get_custom_boot_seq();
+}
 void board_boot_order(u32 *spl_boot_list)
 {
 #define SOC_OM_ADDRBASE        0xffef018010

@@ -27,7 +27,7 @@ DECLARE_GLOBAL_DATA_PTR;
 
 static struct fw_dynamic_info opensbi_info;
 static atomic_t _harts_count = ATOMIC_INITIALIZER(3);
-static ulong _load_start;
+static void * _load_start;
 static ulong _dtb_addr;
 static ulong _dyn_info_addr;
 
@@ -110,7 +110,7 @@ void next_stage(void)
 bool has_reset_sample(ulong dtb_addr)
 {
 	int node_offset;
-	node_offset = fdt_path_offset(dtb_addr, "/soc/reset-sample");
+	node_offset = fdt_path_offset((const void *)dtb_addr, "/soc/reset-sample");
 	if (node_offset < 0) {
 		printf("## fdt has no reset_sample\n");
 		return false;
@@ -161,7 +161,7 @@ static void boot_jump_linux(bootm_headers_t *images, int flag)
 	announce_and_cleanup(fake);
 
 	_load_start = kernel;
-	_dtb_addr = images->ft_addr;
+	_dtb_addr = (ulong)images->ft_addr;
 	_dyn_info_addr = (ulong)&opensbi_info;
 	if (!has_reset_sample(_dtb_addr)) {
 		opensbi_info.magic = FW_DYNAMIC_INFO_MAGIC_VALUE;

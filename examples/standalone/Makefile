@@ -16,8 +16,8 @@ extra-$(CONFIG_PPC)                += sched
 #
 ELF := $(strip $(extra-y))
 
-extra-y += $(addsuffix .srec,$(extra-y)) $(addsuffix .bin,$(extra-y))
-clean-files  := *.srec *.bin
+extra-y += $(addsuffix .bin,$(extra-y))
+clean-files  := *.bin
 
 COBJS	:= $(ELF:=.o)
 
@@ -60,10 +60,6 @@ quiet_cmd_link_elf = LD      $@
 
 $(ELF): $(obj)/%: $(obj)/%.o $(LIB) FORCE
 	$(call if_changed,link_elf)
-
-$(obj)/%.srec: OBJCOPYFLAGS += -O srec
-$(obj)/%.srec: $(obj)/% FORCE
-	$(call if_changed,objcopy)
 
 $(obj)/%.bin: OBJCOPYFLAGS += -O binary
 $(obj)/%.bin: $(obj)/% FORCE

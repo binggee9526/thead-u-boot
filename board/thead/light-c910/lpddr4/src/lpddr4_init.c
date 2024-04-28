@@ -4,7 +4,7 @@
 #include "../include/lpddr4_init.h"
 
 extern void lp4_phy_train1d2d(enum DDR_TYPE type, int speed, enum DDR_BITWIDTH bits);
-
+int dwc_ddrphy_phyinit_regInterface();
 void lpddr4_init(enum DDR_TYPE type, int rank_num, int speed, enum DDR_BITWIDTH bits)
 { 
   //4266 3733 3200 2133
